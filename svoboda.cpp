@@ -28,8 +28,11 @@ struct data_s
     std::vector<double> low;
     std::vector<double> close;
 
+    int overlap;
     int start_idx;
     int end_idx;
+    int begin_idx;
+    int skip;
     int nb_element;
 
     std::vector<double> macd;
@@ -107,49 +110,31 @@ data_s parse_data(std::string data)
 
 TA_RetCode calculations(data_s& data, const params_s& params)
 {
-    size_t start_idx = (data.start_idx > 32) ? data.start_idx - 33 : data.start_idx;
-
-    data.pp.resize(data.close.size());
-    auto low_begin = data.low.begin() + start_idx;
-    auto min_elem = std::min_element(low_begin, low_begin + params.pp_period);
-    auto high_begin = data.high.begin() + start_idx;
-    auto max_elem = std::max_element(high_begin, high_begin + params.pp_period);
-    for (size_t idx = start_idx + params.pp_period; idx < data.end_idx; ++idx) {
-        auto itr = data.close.begin() + idx;
-        auto low_itr = data.low.begin() + idx;
-        auto high_itr = data.high.begin() + idx;
-        if (low_itr - params.pp_period > min_elem) {
-            min_elem = std::min_element(low_itr - params.pp_period, low_itr);
-        }
-        else if (*(low_itr - 1) < *min_elem) {
-            min_elem = low_itr - 1;
-        }
-        if (high_itr - params.pp_period > max_elem) {
-            max_elem = std::max_element(high_itr - params.pp_period, high_itr);
-        }
-        else if (*(high_itr - 1) > *max_elem) {
-            max_elem = high_itr - 1;
-        }
-        data.pp[idx - start_idx + params.pp_period] = ((*max_elem + *min_elem + *(itr - 1)) / 3) + ((*max_elem - *min_elem) * 0.618);
-    }
-
+    int start_idx = (data.start_idx < data.overlap) ? 0 : data.start_idx - data.overlap;
+ 
     data.macd.resize(data.close.size());
     data.signal.resize(data.close.size());
     data.histogram.resize(data.close.size());
 
     TA_RetCode ta_ret = TA_MACD(
-        data.start_idx,        /* startIdx */
-        data.end_idx,          /* endIdx */
-        data.close.data(),     /* inReal[] */
-        params.fast_period,    /* tInFastPeriod From 2 to 100000 */
-        params.slow_period,    /* optInSlowPeriod From 2 to 100000 */
-        params.sig_period,     /* optInSignalPeriod From 1 to 100000 */
-        &data.start_idx,       /* outBegIdx */
-        &data.nb_element,      /* outNBElement */
-        data.macd.data(),      /* outMACD[] */
-        data.signal.data(),    /* outMACDSignal[] */
-        data.histogram.data()  /* outMACDHist[] */
+        start_idx,                     /* startIdx */
+        data.end_idx,                  /* endIdx */
+        data.close.data(),             /* inReal[] */
+        params.fast_period,            /* tInFastPeriod From 2 to 100000 */
+        params.slow_period,            /* optInSlowPeriod From 2 to 100000 */
+        params.sig_period,             /* optInSignalPeriod From 1 to 100000 */
+        &data.begin_idx,               /* outBegIdx */
+        &data.nb_element,              /* outNBElement */
+        data.macd.data(),              /* outMACD[] */
+        data.signal.data(),            /* outMACDSignal[] */
+        data.histogram.data()          /* outMACDHist[] */
     );
+
+    data.begin_idx = std::max(data.begin_idx, params.pp_period - 1);
+    data.skip = (data.begin_idx > data.start_idx) ? 0 : data.start_idx - data.begin_idx + 1;
+    if (data.begin_idx + data.nb_element > data.close.size()) {
+        data.nb_element--;
+    }
 
     if (ta_ret != TA_SUCCESS) {
         std::cout << data.start_idx << ","
@@ -162,20 +147,52 @@ TA_RetCode calculations(data_s& data, const params_s& params)
         std::cout << "TA_MACD() failed with error " << ta_ret << std::endl;
     }
 
+    data.pp.resize(data.close.size());
+
+    auto low_begin = data.low.begin() + data.begin_idx;
+    auto high_begin = data.high.begin() + data.begin_idx;
+    auto min_elem = std::min_element(low_begin - params.pp_period, low_begin + 1);
+    auto max_elem = std::max_element(high_begin - params.pp_period, high_begin + 1);
+
+    auto close_itr = data.close.begin() + data.begin_idx;
+    auto low_itr = data.low.begin() + data.begin_idx;
+    auto high_itr = data.high.begin() + data.begin_idx;
+
+    data.pp[0] = ((*max_elem + *min_elem + *close_itr) / 3) + ((*max_elem - *min_elem) * 0.618);
+
+    for (int idx = 1; idx < data.nb_element; ++idx) {
+        close_itr++;
+        low_itr++;
+        high_itr++;
+
+        if (low_itr - params.pp_period > min_elem) {
+            min_elem = std::min_element(low_itr - params.pp_period, low_itr + 1);
+        }
+        else if (*low_itr < *min_elem) {
+            min_elem = low_itr;
+        }
+        if (high_itr - params.pp_period > max_elem) {
+            max_elem = std::max_element(high_itr - params.pp_period, high_itr + 1);
+        }
+        else if (*high_itr > *max_elem) {
+            max_elem = high_itr;
+        }
+
+        data.pp[idx] = ((*max_elem + *min_elem + *close_itr) / 3) + ((*max_elem - *min_elem) * 0.618);
+    }
+
     return ta_ret;
 }
 
 void strategy(data_s& data, const params_s& params, bool log = true)
 {
     int timeout = 0;
-    for (size_t idx = 0; idx < data.nb_element; ++idx) {
+    for (size_t idx = data.skip; idx < data.nb_element; ++idx) {
         if (timeout > 0) {
             timeout--;
         }
-        if (data.start_idx + idx >= data.end_idx) {
-            break;
-        }
-        if ((timeout == 0) && data.high[data.start_idx + idx] > data.pp[idx]) {
+
+        if ((timeout == 0) && data.high[data.begin_idx + idx - data.skip] > data.pp[idx]) {
             timeout = 12;
             if (data.macd[idx] > data.signal[idx]) {
                 if (data.depo <= DEPO_MIN) {
@@ -198,6 +215,9 @@ void strategy(data_s& data, const params_s& params, bool log = true)
                 data.tx_cnt++;
             }
             if (log) {
+                if (data.pos > 100) {
+                    printf("");
+                }
                 printf("%d,%d,%d,%.4f,%.4f,%.4f\n", params.fast_period, params.slow_period, params.sig_period, data.depo, data.pos, data.depo + (data.pos * data.close[idx]));
             }
         }
@@ -268,10 +288,12 @@ int main()
     data.tx_cnt = 0;
 
     params_s params = { 12, 26, 9, 27 };
-    int interval = 24 * 31;
+    int interval = 24 * 365;
 
-    std::ofstream fout("data31.dat", std::ios::out | std::ios::binary);
-    for (int start_idx = 100; start_idx < data.close.size(); start_idx += interval) {
+    data.overlap = 400;
+
+    //std::ofstream ofs("data365.dat", std::ios::binary);
+    for (int start_idx = 0; start_idx < data.close.size(); start_idx += interval) {
         data.start_idx = start_idx;
         data.end_idx = start_idx + interval;
 
@@ -284,13 +306,11 @@ int main()
             std::cout << "calculations() failed with error " << ta_ret << std::endl;
             return -1;
         }
-        
-        for (int iii = 0; iii < data.nb_element; ++iii) {
-            std::string ggg = std::to_string(data.signal[iii]);
-            fout.write(ggg.c_str(), ggg.length());
-            fout.write("\n", 1);
-        }
-        fout.write("\n", 1);
+        //for (int idx = data.skip; idx < data.nb_element; ++idx) {
+        //    std::string ss = std::to_string(data.pp[idx]);
+        //    ofs.write(ss.c_str(), ss.length());
+        //    ofs.write("\n", 1);
+        //}
 
         strategy(data, params, true /*log*/);
 
@@ -300,10 +320,7 @@ int main()
             return -1;
         }
     }
-
-
-    fout.close();
-
+    //ofs.close();
     TA_Shutdown();
     return 0;
 }
