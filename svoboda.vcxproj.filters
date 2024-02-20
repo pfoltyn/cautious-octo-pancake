@@ -18,5 +18,16 @@
     <ClCompile Include="svoboda.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="ema_cross.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="strategy_interface.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ema_cross.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

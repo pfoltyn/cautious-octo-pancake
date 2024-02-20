@@ -40,6 +40,7 @@ struct data_s
     std::vector<double> histogram;
 
     std::vector<double> pp;
+    std::vector<double> ll;
 };
 
 struct params_s
@@ -49,6 +50,8 @@ struct params_s
     int sig_period;
 
     int pp_period;
+
+    int timeout;
 };
 
 std::string get_file_contents(const std::string filename)
@@ -132,7 +135,7 @@ TA_RetCode calculations(data_s& data, const params_s& params)
 
     data.begin_idx = std::max(data.begin_idx, params.pp_period - 1);
     data.skip = (data.begin_idx > data.start_idx) ? 0 : data.start_idx - data.begin_idx + 1;
-    if (data.begin_idx + data.nb_element > data.close.size()) {
+    if (data.begin_idx + data.nb_element > (int)data.close.size()) {
         data.nb_element--;
     }
 
@@ -148,6 +151,7 @@ TA_RetCode calculations(data_s& data, const params_s& params)
     }
 
     data.pp.resize(data.close.size());
+    data.ll.resize(data.close.size());
 
     auto low_begin = data.low.begin() + data.begin_idx;
     auto high_begin = data.high.begin() + data.begin_idx;
@@ -158,7 +162,8 @@ TA_RetCode calculations(data_s& data, const params_s& params)
     auto low_itr = data.low.begin() + data.begin_idx;
     auto high_itr = data.high.begin() + data.begin_idx;
 
-    data.pp[0] = ((*max_elem + *min_elem + *close_itr) / 3) + ((*max_elem - *min_elem) * 0.618);
+    data.pp[0] = ((*max_elem + *min_elem + *close_itr) / 3) + ((*max_elem - *min_elem) * 0.382);//0.618);
+    data.ll[0] = ((*max_elem + *min_elem + *close_itr) / 3) - ((*max_elem - *min_elem) * 0.382);//0.618);
 
     for (int idx = 1; idx < data.nb_element; ++idx) {
         close_itr++;
@@ -179,6 +184,7 @@ TA_RetCode calculations(data_s& data, const params_s& params)
         }
 
         data.pp[idx] = ((*max_elem + *min_elem + *close_itr) / 3) + ((*max_elem - *min_elem) * 0.618);
+        data.ll[idx] = ((*max_elem + *min_elem + *close_itr) / 3) - ((*max_elem - *min_elem) * 0.618);
     }
 
     return ta_ret;
@@ -186,39 +192,43 @@ TA_RetCode calculations(data_s& data, const params_s& params)
 
 void strategy(data_s& data, const params_s& params, bool log = true)
 {
-    int timeout = 0;
-    for (size_t idx = data.skip; idx < data.nb_element; ++idx) {
-        if (timeout > 0) {
-            timeout--;
-        }
+    for (int idx = data.skip; idx < data.nb_element - 1; ++idx) {
+        int price_idx = data.begin_idx + idx + 1;
 
-        if ((timeout == 0) && data.high[data.begin_idx + idx - data.skip] > data.pp[idx]) {
-            timeout = 12;
-            if (data.macd[idx] > data.signal[idx]) {
+        if (data.low[price_idx] < data.ll[idx]) {
+            if ((data.macd[idx] > data.signal[idx])) {
                 if (data.depo <= DEPO_MIN) {
                     continue;
                 }
                 double chunk = data.depo * INC_SIZE;
-                double pos_chunk = chunk / (data.pp[idx] * (1 + TX_COST));
+                double pos_chunk = chunk / (data.ll[idx] * (1 + TX_COST));
                 data.pos += pos_chunk;
                 data.depo -= chunk;
                 data.tx_cnt++;
+                idx += params.timeout - 1; // timeout
+                if (log) {
+                    printf("%d,%d,%d,%d,%.4f,%.4f,%.4f\n",
+                        params.fast_period, params.slow_period, params.sig_period, params.timeout,
+                        data.depo, data.pos, data.depo + (data.pos * data.close[price_idx]));
+                }
             }
-            else {
+        }
+        if (data.high[price_idx] > data.pp[idx]) {
+            if ((data.macd[idx] < data.signal[idx])) {
                 if (data.pos <= POS_MIN) {
                     continue;
                 }
                 double chunk = data.pos * DEC_SIZE;
-                double depo_chunk = chunk * (data.pp[idx] * (1 - TX_COST));
+                double depo_chunk = chunk * (data.ll[idx] * (1 - TX_COST));
                 data.depo += depo_chunk;
                 data.pos -= chunk;
                 data.tx_cnt++;
-            }
-            if (log) {
-                if (data.pos > 100) {
-                    printf("");
+                idx += params.timeout - 1; //timeout
+                if (log) {
+                    printf("%d,%d,%d,%d,%.4f,%.4f,%.4f\n",
+                        params.fast_period, params.slow_period, params.sig_period, params.timeout,
+                        data.depo, data.pos, data.depo + (data.pos * data.close[price_idx]));
                 }
-                printf("%d,%d,%d,%.4f,%.4f,%.4f\n", params.fast_period, params.slow_period, params.sig_period, data.depo, data.pos, data.depo + (data.pos * data.close[idx]));
             }
         }
     }
@@ -229,41 +239,46 @@ TA_RetCode update_params(data_s& data, params_s& params)
     TA_RetCode ta_ret = TA_SUCCESS;
     double max_money = 0;
     params_s new_par = params;
-    for (int fast = 0; fast < 3; ++fast) {
+    for (int fast = -2; fast < 3; ++fast) {
         if (params.fast_period + fast < 2) {
             continue;
         }
-        for (int slow = 0; slow < 3; ++slow) {
+        for (int slow = -2; slow < 3; ++slow) {
             if (params.slow_period + slow <= params.fast_period + fast) {
                 continue;
             }
-            for (int sig = 0; sig < 3; ++sig) {
+            for (int sig = -2; sig < 3; ++sig) {
                 if (params.sig_period + sig < 1) {
                     continue;
                 }
+                for (int tim = -2; tim < 3; ++tim) {
+                    if (params.timeout + tim < 1) {
+                        continue;
+                    }
 
-                params_s current = params;
-                current.fast_period += fast;
-                current.slow_period += slow;
-                current.sig_period += sig;
+                    params_s current = params;
+                    current.fast_period += fast;
+                    current.slow_period += slow;
+                    current.sig_period += sig;
 
-                ta_ret = calculations(data, current);
-                if (ta_ret != TA_SUCCESS) {
-                    std::cout << "calculations() failed with error " << ta_ret << std::endl;
-                    return ta_ret;
+                    ta_ret = calculations(data, current);
+                    if (ta_ret != TA_SUCCESS) {
+                        std::cout << "calculations() failed with error " << ta_ret << std::endl;
+                        return ta_ret;
+                    }
+
+                    double depo = data.depo;
+                    double pos = data.pos;
+                    int tx_cnt = data.tx_cnt;
+                    strategy(data, current, false /*log*/);
+                    if (data.depo + (data.pos * data.close[data.end_idx]) > max_money) {
+                        max_money = data.depo + (data.pos * data.close[data.end_idx]);
+                        new_par = current;
+                    }
+                    data.depo = depo;
+                    data.pos = pos;
+                    data.tx_cnt = tx_cnt;
                 }
-
-                double depo = data.depo;
-                double pos = data.pos;
-                int tx_cnt = data.tx_cnt;
-                strategy(data, current, false /*log*/);
-                if (data.depo + (data.pos * data.close.back()) > max_money) {
-                    max_money = data.depo + (data.pos * data.close.back());
-                    new_par = current;
-                }
-                data.depo = depo;
-                data.pos = pos;
-                data.tx_cnt = tx_cnt;
             }
         }
     }
@@ -287,12 +302,13 @@ int main()
     data.pos = 0.0;
     data.tx_cnt = 0;
 
-    params_s params = { 12, 26, 9, 27 };
-    int interval = 24 * 365;
+    //params_s params = { 20, 100, 9, 27, 12 };
+    params_s params = { 2, 18, 43, 27, 12 };
+    int interval = 24 * 7;
+    int span = interval * 12;
 
     data.overlap = 400;
 
-    //std::ofstream ofs("data365.dat", std::ios::binary);
     for (int start_idx = 0; start_idx < data.close.size(); start_idx += interval) {
         data.start_idx = start_idx;
         data.end_idx = start_idx + interval;
@@ -306,21 +322,17 @@ int main()
             std::cout << "calculations() failed with error " << ta_ret << std::endl;
             return -1;
         }
-        //for (int idx = data.skip; idx < data.nb_element; ++idx) {
-        //    std::string ss = std::to_string(data.pp[idx]);
-        //    ofs.write(ss.c_str(), ss.length());
-        //    ofs.write("\n", 1);
-        //}
 
         strategy(data, params, true /*log*/);
 
-        //ta_ret = update_params(data, params);
+        data.start_idx = (start_idx < span) ? 0 : start_idx - span;
+        ta_ret = update_params(data, params);
         if (ta_ret != TA_SUCCESS) {
             std::cout << "update_params() failed with error " << ta_ret << std::endl;
             return -1;
         }
     }
-    //ofs.close();
+
     TA_Shutdown();
     return 0;
 }

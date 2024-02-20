@@ -1,3 +1,6 @@
 [submodule "submodules/ta-lib"]
 	path = submodules/ta-lib
 	url = git@github.com:pfoltyn/ta-lib.git
+[submodule "submodules/spdlog"]
+	path = submodules/spdlog
+	url = git@github.com:gabime/spdlog.git
